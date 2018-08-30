@@ -1,0 +1,11 @@
+[package]
+name = "md3-rs"
+version = "0.1.0"
+authors = ["aurum_syntax <mipsmartin@gmail.com>"]
+
+[[bin]]
+name = "test01"
+path = "src/test01/main.rs"
+
+[dependencies]
+byteorder = "*"
