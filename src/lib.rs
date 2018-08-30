@@ -26,24 +26,50 @@ pub mod math
 pub mod geom
 {
     use math::Vec3;
+    use md3::Md3Model;
 
-
+    #[allow(dead_code)]
     struct StaticMesh
     {
         triangles:  Vec<Vec3>,
         indicies: Vec<i32>
     }
 
+    #[allow(dead_code)]
     struct VertexAnimatedMesh
     {
-        frames : StaticMesh
+        frames : Vec<StaticMesh>
     }
 
-
+    #[allow(dead_code)]
     enum GLReadyMesh{
         VertexAnimated( VertexAnimatedMesh ),
         Static( StaticMesh ),
+        Corrupted( String ) // Failed on loading
     }
+
+    trait CreateGLReadyMesh {
+        fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh;
+    }
+
+
+    impl CreateGLReadyMesh for Md3Model
+    {
+        // FINISHME
+        fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh
+        {
+            // Convert to GL ready format
+            if self.header.frame_count > 1 {
+                // VertexAnimated mesh will be produced
+                
+            }else{
+                // Static mesh will be produced 
+                
+            }
+            return GLReadyMesh::Corrupted(String::from("Cannot make GL ready mesh from MD3 model!"));
+        }
+    }
+
 }
 
 #[allow(dead_code)]
@@ -57,7 +83,9 @@ pub mod md3 {
     use byteorder::{LittleEndian,ReadBytesExt};
     use math::Vec3;
 
-   
+    const MAX_QPATH : usize = 64;
+    const MD3_XYZ_SCALE : f32 = 1.0/64.0;
+
     #[allow(dead_code)]
     pub struct Md3Header
     {
@@ -112,6 +140,20 @@ pub mod md3 {
         pub end_offset : i32,
     }
 
+    pub struct Md3SurfaceData
+    {
+        pub triangles:   Vec<Md3Triangle>,
+        pub shaders:     Vec<Md3Shader>,
+        pub st_data:     Vec<Md3St>,
+        pub xyz_normals: Vec<Md3XyzNormal>,
+    }
+
+    pub struct Md3Surface
+    {
+        pub header: Md3SurfaceHeader,
+        pub data:   Md3SurfaceData
+    }
+
     pub struct Md3Triangle
     {
         pub indicies : [i32 ; 3]
@@ -124,8 +166,8 @@ pub mod md3 {
 
     pub struct Md3XyzNormal
     {
-        xyz : [i16 ; 3],
-        normal : i16
+        pub xyz : [i16 ; 3],
+        pub normal : i16
     }
 
     #[allow(dead_code)]
@@ -133,7 +175,7 @@ pub mod md3 {
     {
         pub header : Md3Header,
         pub frames : Vec<Md3Frame>,
-        pub surfaces : Vec<Md3SurfaceHeader>,
+        pub surfaces : Vec<Md3Surface>,
         pub st_buffer : Vec<Md3St>,
         pub xyz_normals : Vec<Md3XyzNormal>,
         pub shaders : Vec<Md3Shader>
@@ -163,13 +205,25 @@ pub mod md3 {
         };
     }
 
-    macro_rules! read_all_little_f32{
-        // (structure, input stream);  fields ...
+    macro_rules! read_all_little_i16{
+        ($i:ident;$($var_name:expr),+) => {
+            $(($var_name = $i.read_i16::<LittleEndian>().expect(format!("FAILED LOADING FIELD OF {} STRUCURE", stringify!($s) ).as_str()));)+;
+
+        }; 
         (($s:ident, $i:ident);$($var_name:tt),+) => {
-            $(($s.$var_name = $i.read_f32::<LittleEndian>().expect(format!("FAILED LOADING FIELD OF {} STRUCURE", stringify!($s) ).as_str()));)+;
-        }
+            $(($s.$var_name = $i.read_i16::<LittleEndian>().expect(format!("FAILED LOADING FIELD OF {} STRUCURE", stringify!($s) ).as_str()));)+;
+        };
     }
 
+    macro_rules! read_all_little_f32{
+        ($i:ident;$($var_name:expr),+) => {
+            $(($var_name = $i.read_f32::<LittleEndian>().expect(format!("FAILED LOADING FIELD OF {} STRUCURE", stringify!($s) ).as_str()));)+;
+
+        }; 
+        (($s:ident, $i:ident);$($var_name:tt),+) => {
+            $(($s.$var_name = $i.read_f32::<LittleEndian>().expect(format!("FAILED LOADING FIELD OF {} STRUCURE", stringify!($s) ).as_str()));)+;
+        };
+    }
 
 
 
@@ -218,6 +272,25 @@ pub mod md3 {
         }
     }
 
+    impl Md3St
+    {
+        fn read_from<RType: Read + Seek>( inp : &mut RType, start_offset : i32,
+                                          buff : &mut Vec<Md3St>, count : i32 )
+        {
+            inp.seek( SeekFrom::Start( start_offset as u64 ) )
+                .expect("Error while seeking to ST position in MD3 file!");
+            for _  in 0 ..  count {
+                let mut st : Md3St = unsafe { mem::zeroed() };
+                read_all_little_f32!{
+                    inp;
+                    st.st[0], st.st[1]
+                }
+
+                buff.push( st );
+            }
+        }
+    }
+
     impl Md3Frame
     {
         fn read_from<RType: Read + Seek>( inp: &mut RType, buff : &mut Vec<Md3Frame>, count: i32 ) 
@@ -234,33 +307,81 @@ pub mod md3 {
         }
     }
 
-    impl Md3SurfaceHeader
+    impl Md3XyzNormal
     {
-        fn read_from<RType: Read + Seek>( inp: &mut RType, buff : &mut Vec<Md3SurfaceHeader>, count: i32 ) 
+
+        fn read_from<RType: Read + Seek>( inp : &mut RType, start_offset : i32, buff : &mut Vec<Md3XyzNormal>, count : i32 )
         {
+            inp.seek( SeekFrom::Start( start_offset as u64 ) )
+                .expect("Error while seeking to XyzNormal position in MD3 file!");
+            // xyz is stored as i16, they have to be scaled by a factor of 1/64
             for _ in 0 .. count {
-                let mut surf : Md3SurfaceHeader = unsafe { mem::zeroed() };
-                inp.read( &mut surf.name ).unwrap();
+                let mut xyzn : Md3XyzNormal  = unsafe { mem::zeroed() };
+                read_all_little_i16!{
+                    inp;
+                    xyzn.xyz[0], xyzn.xyz[1], xyzn.xyz[2], xyzn.normal
+                };
+                buff.push( xyzn );
+            }
+        }
+
+        fn decode_normal( &self ) -> Vec3
+        {
+            use std::f64::consts::PI;
+            let lat = ((self.normal >> 8) & 255) as f64 * (2.0* PI) / 255.0;
+            let lng = (self.normal & 255) as f64 * ( 2.0 * PI ) / 255.0;
+            Vec3 {
+                x: (lat.cos() *  lng.sin()) as f32,
+                y:  (lat.sin()  *  lng.sin()) as f32,
+                z:  lng.cos() as f32
+            }
+        }
+    }
+
+    impl Md3Surface
+    {
+        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : i32 , buff : &mut Vec<Md3Surface>, count: i32 ) 
+        {
+
+            inp.seek( SeekFrom::Start( start_offset as u64) )
+                .expect("Could not seek to surfaces offset!"); 
+
+            for _ in 0 .. count {
+                let mut surf_header : Md3SurfaceHeader = unsafe { mem::zeroed() };
+                let mut surf_data   : Md3SurfaceData   = unsafe { mem::zeroed() };
+
+                inp.read( &mut surf_header.name ).unwrap();
                 read_all_little_i32!{
-                    (surf,inp);
+                    (surf_header,inp);
                     flags, frame_count, shader_count,
                     vertex_count, triangle_count, triangles_offset,
                     shaders_offset, st_offset, xyz_normals_offset,
                     end_offset
                 }
-                buff.push( surf );
+                // FIXME: WE SHOULD LOAD Md3SurfaceData right now!
+                // FINISHME
+                Md3Triangle::read_from( inp, start_offset + surf_header.triangles_offset, &mut surf_data.triangles, surf_header.triangle_count );
+
+
+                Md3XyzNormal::read_from( inp, start_offset+surf_header.xyz_normals_offset, &mut surf_data.xyz_normals,  surf_header.vertex_count );
+
+                Md3Shader::read_from( inp, start_offset+surf_header.shaders_offset,  &mut surf_data.shaders, surf_header.shader_count );
+
+                buff.push( Md3Surface{ header: surf_header, data: surf_data } );
             }
         }
     }
 
     impl Md3Shader
     {
-        
-        fn read_from<RType: Read + Seek>( inp: &mut RType, buff : &mut Vec<Md3Shader>, count: i32 ) 
+        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : i32, buff : &mut Vec<Md3Shader>, count: i32 ) 
         {
+            inp.seek( SeekFrom::Start( start_offset as u64 ) )
+                .expect("Error while seeking to Shader position in MD3 file");
             for _ in 0 .. count {
                 let mut shdr : Md3Shader = unsafe { mem::zeroed() };
-                inp.read( &mut shdr.name );
+                inp.read( &mut shdr.name )
+                    .expect("Could not read shader name within MD3 file!");
                 read_all_little_i32!( (shdr, inp); shader_index );
                 buff.push( shdr );
             }
@@ -285,8 +406,11 @@ pub mod md3 {
 
     impl Md3Triangle
     {
-        fn read_from<RType: Read + Seek>( inp: &mut RType, buff : &mut Vec<Md3Triangle>, count: i32 ) 
+        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : i32, buff : &mut Vec<Md3Triangle>, count: i32 ) 
         {
+            inp.seek( SeekFrom::Start( start_offset as u64 ) ).
+                expect("Could not seek into file(Triangles)!");
+
             for _ in 0 .. count {
                 let mut tri  : Md3Triangle = unsafe { mem::zeroed() };
                 {
@@ -306,6 +430,7 @@ pub mod md3 {
 
     impl Md3Model
     {
+
         pub fn load( fname : String ) -> Option<Md3Model>
         {
             let mut fin = File::open(fname).expect("Could not open MD3 model file!");
@@ -340,15 +465,14 @@ pub mod md3 {
 
             fin.seek( SeekFrom::Start( m.header.frames_offset as u64) )
                 .expect("Could not seek to frames offset!"); 
+
             Md3Frame::read_from(
                 &mut fin, &mut m.frames,
                 m.header.frame_count
             );
 
-            fin.seek( SeekFrom::Start( m.header.surfaces_offset as u64) )
-                .expect("Could not seek to surfaces offset!"); 
-            Md3SurfaceHeader::read_from(
-                &mut fin, &mut m.surfaces,
+            Md3Surface::read_from(
+                &mut fin, m.header.surfaces_offset, &mut m.surfaces,
                 m.header.surface_count
             );
 
@@ -357,5 +481,9 @@ pub mod md3 {
     }
 
 
-
 }
+
+
+
+
+
