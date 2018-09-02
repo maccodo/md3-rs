@@ -1,9 +1,8 @@
 
 /*
 NOTE:
-  Strings are null terminated in md3 and names are maximum
-  64 characters in length
-
+Strings are null terminated in md3 and names are maximum
+64 characters in length
 */
 
 extern crate byteorder;
@@ -29,48 +28,49 @@ pub mod geom
     use md3::Md3Model;
 
     #[allow(dead_code)]
-    struct StaticMesh
+    pub struct StaticMesh
     {
-        triangles:  Vec<Vec3>,
-        indicies: Vec<i32>
+        pub indices: Vec<i32>,
+        pub vertices:  Vec<Vec3>,
+        pub normals: Vec<Vec3>,
+        pub uv_data: Vec<UV>
     }
 
     #[allow(dead_code)]
-    struct VertexAnimatedMesh
+    pub struct VertexAnimatedMesh
     {
-        frames : Vec<StaticMesh>
+        pub frames : Vec<StaticMesh>
     }
 
     #[allow(dead_code)]
-    enum GLReadyMesh{
+    pub enum GLReadyMesh{
         VertexAnimated( VertexAnimatedMesh ),
         Static( StaticMesh ),
         Corrupted( String ) // Failed on loading
     }
 
-    trait CreateGLReadyMesh {
-        fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh;
+    pub struct UV{
+        pub u: f32, pub v: f32
     }
 
+    pub trait CreateGLReadyMesh {
+       fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh;
+    }
 
-    impl CreateGLReadyMesh for Md3Model
+    impl StaticMesh
     {
-        // FINISHME
-        fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh
+        pub fn empty() -> StaticMesh
         {
-            // Convert to GL ready format
-            if self.header.frame_count > 1 {
-                // VertexAnimated mesh will be produced
-                
-            }else{
-                // Static mesh will be produced 
-                
-            }
-            return GLReadyMesh::Corrupted(String::from("Cannot make GL ready mesh from MD3 model!"));
+            StaticMesh{ triangles: vec![], indices: vec![] }
         }
+
     }
+
 
 }
+
+
+
 
 #[allow(dead_code)]
 pub mod md3 {
@@ -156,12 +156,12 @@ pub mod md3 {
 
     pub struct Md3Triangle
     {
-        pub indicies : [i32 ; 3]
+        pub indices : [i32 ; 3]
     }
 
     pub struct Md3St
     {
-        st : [f32; 2]
+        pub st : [f32; 2]
     }
 
     pub struct Md3XyzNormal
@@ -325,7 +325,16 @@ pub mod md3 {
             }
         }
 
-        fn decode_normal( &self ) -> Vec3
+        pub fn decode_xyz( &self ) -> Vec3
+        {
+            Vec3{
+                x: self.xyz[0] as f32 * MD3_XYZ_SCALE,
+                y: self.xyz[1] as f32 * MD3_XYZ_SCALE,
+                z: self.xyz[2] as f32 * MD3_XYZ_SCALE
+            }
+        }
+
+        pub fn decode_normal( &self ) -> Vec3
         {
             use std::f64::consts::PI;
             let lat = ((self.normal >> 8) & 255) as f64 * (2.0* PI) / 255.0;
@@ -416,9 +425,9 @@ pub mod md3 {
                 {
                     read_all_little_i32!(
                         inp;
-                        tri.indicies[0],
-                        tri.indicies[1],
-                        tri.indicies[2]
+                        tri.indices[0],
+                        tri.indices[1],
+                        tri.indices[2]
                     );
                 }
                 buff.push( tri );
@@ -486,4 +495,37 @@ pub mod md3 {
 
 
 
+
+impl geom::CreateGLReadyMesh for md3::Md3Model
+{
+    // FINISHME
+    fn create_gl_ready_mesh( &mut self ) -> geom::GLReadyMesh
+    {
+        // Convert to GL ready format
+        if self.header.frame_count > 1 {
+            // VertexAnimated mesh will be produced
+            let mut m = geom::VertexAnimatedMesh { frames: vec![] };
+            for s in self.surfaces {
+                let sm = geom::StaticMesh::empty();
+                for p in s.data.xyz_normals{
+                    sm.vertices.push( p.decode_xyz() );
+                    sm.normals.push( p.decode_normal() );
+                }
+                for i in s.data.triangles{
+                    sm.indices.push( i.indices[0] );
+                    sm.indices.push( i.indices[1] );
+                    sm.indices.push( i.indices[2] );
+                }
+                for st in s.data.st_data {
+                    sm.uv_data.push( geom::UV { u: st.st[0], v: 1.0-st.st[1] } ); // s = u, v = 1 - t
+                }
+            }
+
+        }else{
+            // Static mesh will be produced 
+            
+        }
+        return geom::GLReadyMesh::Corrupted(String::from("Cannot make GL ready mesh from MD3 model!"));
+    }
+}
 
