@@ -3,9 +3,10 @@
 NOTE:
 Strings are null terminated in md3 and names are maximum
 64 characters in length
-*/
+ */
 
 extern crate byteorder;
+extern crate itertools;
 
 // FIXME:  Implement loading for other structures such as 
 
@@ -21,56 +22,127 @@ pub mod math
 
 }
 
+#[macro_export]
+macro_rules! implement_geometry_types {
 
-pub mod geom
-{
-    use math::Vec3;
-    use md3::Md3Model;
-
-    #[allow(dead_code)]
-    pub struct StaticMesh
-    {
-        pub indices: Vec<i32>,
-        pub vertices:  Vec<Vec3>,
-        pub normals: Vec<Vec3>,
-        pub uv_data: Vec<UV>
-    }
-
-    #[allow(dead_code)]
-    pub struct VertexAnimatedMesh
-    {
-        pub frames : Vec<StaticMesh>
-    }
-
-    #[allow(dead_code)]
-    pub enum GLReadyMesh{
-        VertexAnimated( VertexAnimatedMesh ),
-        Static( StaticMesh ),
-        Corrupted( String ) // Failed on loading
-    }
-
-    pub struct UV{
-        pub u: f32, pub v: f32
-    }
-
-    pub trait CreateGLReadyMesh {
-       fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh;
-    }
-
-    impl StaticMesh
-    {
-        pub fn empty() -> StaticMesh
+    () => {
+        pub mod geom
         {
-            StaticMesh{ triangles: vec![], indices: vec![] }
+            extern crate md3_rs;
+            // use md3::Md3Model;
+
+            #[allow(dead_code)]
+            #[derive(Copy, Clone)]
+            pub struct GLVertex
+            {
+                pub position: [f32; 3],
+                pub normal:   [f32; 3],
+                pub uv:       [f32; 2]
+            }
+
+            #[allow(dead_code)]
+            pub struct GLStaticMesh
+            {
+                pub indices: Vec<u16>,
+                pub vertices: Vec<GLVertex>
+            }
+
+            #[allow(dead_code)]
+            pub struct GLVertexAnimatedMesh
+            {
+                pub frames : Vec<GLStaticMesh>
+            }
+
+            #[allow(dead_code)]
+            pub enum GLReadyMesh{
+                VertexAnimated( GLVertexAnimatedMesh ),
+                Static( GLStaticMesh ),
+                Corrupted( String ) // Failed on loading
+            }
+
+            pub struct UV{
+                pub u: f32, pub v: f32
+            }
+
+            pub trait CreateGLReadyMesh {
+                fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh;
+            }
+
+            impl GLStaticMesh
+            {
+                pub fn empty() -> GLStaticMesh
+                {
+                    GLStaticMesh{
+                        indices: vec![], vertices: vec![]
+                    }
+                }
+
+            }
+
+            impl GLVertex
+            {
+                pub fn null() -> GLVertex
+                {
+                    GLVertex {
+                        position: [0 as f32; 3],
+                        normal:   [0 as f32; 3],
+                        uv:       [0 as f32; 2]
+                    }
+                }
+            }
+
+
+            impl CreateGLReadyMesh for md3_rs::md3::Md3Model
+            {
+                // FINISHME
+                fn create_gl_ready_mesh( &mut self ) -> GLReadyMesh
+                {
+                    // Convert to GL ready format
+                    if self.header.frame_count > 1 {
+                        // VertexAnimated mesh will be produced
+                        let mut amesh = GLVertexAnimatedMesh { frames: vec![] };
+                        for surf in self.surfaces.iter() {
+                            let mut smesh = GLStaticMesh::empty();
+
+                            // Collect vertices
+                            println!("NUM_OF_XYZ_NORMALS: {}", surf.data.xyz_normals.len());
+                            smesh.vertices = surf.data.xyz_normals.iter()
+                                .zip( surf.data.st_data.iter() )
+                                .map(|(xyzn, st)|{
+                                    println!("HERE_IS_VERTEX!");
+                                    GLVertex{
+                                        position: xyzn.decode_xyz(),
+                                        normal:    xyzn.decode_normal(),
+                                        uv:       [ st.st[0], 1.0f32-st.st[1]]
+                                    }
+                                }).collect();
+                            println!("Collected {} vertices!", smesh.vertices.len() );
+
+                            // Collect indices 
+                            smesh.indices.reserve_exact( surf.data.triangles.len() * 3 );
+                            for tri in surf.data.triangles.iter() {
+                                smesh.indices.push( tri.indices[0] as u16 );
+                                smesh.indices.push( tri.indices[1] as u16 );
+                                smesh.indices.push( tri.indices[2] as u16 );
+                            }
+
+                            // push another frame
+                            amesh.frames.push( smesh);
+                        }
+                        return GLReadyMesh::VertexAnimated( amesh );
+                    }else{
+                        // Static mesh will be produced 
+                        
+                    }
+                    return GLReadyMesh::Corrupted(String::from("Cannot make GL ready mesh from MD3 model!"));
+                }
+            }
+
+
+
         }
-
-    }
-
-
+    };
 }
-
-
-
 
 #[allow(dead_code)]
 pub mod md3 {
@@ -325,25 +397,25 @@ pub mod md3 {
             }
         }
 
-        pub fn decode_xyz( &self ) -> Vec3
+        pub fn decode_xyz( &self ) -> [f32; 3]
         {
-            Vec3{
-                x: self.xyz[0] as f32 * MD3_XYZ_SCALE,
-                y: self.xyz[1] as f32 * MD3_XYZ_SCALE,
-                z: self.xyz[2] as f32 * MD3_XYZ_SCALE
-            }
+            [
+                self.xyz[0] as f32 * MD3_XYZ_SCALE,
+                self.xyz[1] as f32 * MD3_XYZ_SCALE,
+                self.xyz[2] as f32 * MD3_XYZ_SCALE
+            ]
         }
 
-        pub fn decode_normal( &self ) -> Vec3
+        pub fn decode_normal( &self ) -> [f32; 3]
         {
             use std::f64::consts::PI;
             let lat = ((self.normal >> 8) & 255) as f64 * (2.0* PI) / 255.0;
             let lng = (self.normal & 255) as f64 * ( 2.0 * PI ) / 255.0;
-            Vec3 {
-                x: (lat.cos() *  lng.sin()) as f32,
-                y:  (lat.sin()  *  lng.sin()) as f32,
-                z:  lng.cos() as f32
-            }
+            [
+                (lat.cos() *  lng.sin()) as f32,
+                (lat.sin()  *  lng.sin()) as f32,
+                lng.cos() as f32
+            ]
         }
     }
 
@@ -354,6 +426,8 @@ pub mod md3 {
 
             inp.seek( SeekFrom::Start( start_offset as u64) )
                 .expect("Could not seek to surfaces offset!"); 
+
+            println!("READING SURFACES; COUNT: {}", count);
 
             for _ in 0 .. count {
                 let mut surf_header : Md3SurfaceHeader = unsafe { mem::zeroed() };
@@ -367,6 +441,7 @@ pub mod md3 {
                     shaders_offset, st_offset, xyz_normals_offset,
                     end_offset
                 }
+
                 // FIXME: WE SHOULD LOAD Md3SurfaceData right now!
                 // FINISHME
                 Md3Triangle::read_from( inp, start_offset + surf_header.triangles_offset, &mut surf_data.triangles, surf_header.triangle_count );
@@ -464,12 +539,12 @@ pub mod md3 {
             fin.seek( SeekFrom::Start( tmp_offset ) ).ok().unwrap();
             println!("MD3 IDENT OFFSET: {}", tmp_offset);
             let mut m = Md3Model {
-                header : Md3Header::read_from( &mut fin ),
-                frames : vec![],
-                surfaces : vec![],
-                st_buffer : vec![],
-                xyz_normals : vec![],
-                shaders : vec![]
+                header: Md3Header::read_from( &mut fin ),
+                frames:      vec![],
+                surfaces:    vec![],
+                st_buffer:   vec![],
+                xyz_normals: vec![],
+                shaders:     vec![]
             };
 
             fin.seek( SeekFrom::Start( m.header.frames_offset as u64) )
@@ -494,38 +569,4 @@ pub mod md3 {
 
 
 
-
-
-impl geom::CreateGLReadyMesh for md3::Md3Model
-{
-    // FINISHME
-    fn create_gl_ready_mesh( &mut self ) -> geom::GLReadyMesh
-    {
-        // Convert to GL ready format
-        if self.header.frame_count > 1 {
-            // VertexAnimated mesh will be produced
-            let mut m = geom::VertexAnimatedMesh { frames: vec![] };
-            for s in self.surfaces {
-                let sm = geom::StaticMesh::empty();
-                for p in s.data.xyz_normals{
-                    sm.vertices.push( p.decode_xyz() );
-                    sm.normals.push( p.decode_normal() );
-                }
-                for i in s.data.triangles{
-                    sm.indices.push( i.indices[0] );
-                    sm.indices.push( i.indices[1] );
-                    sm.indices.push( i.indices[2] );
-                }
-                for st in s.data.st_data {
-                    sm.uv_data.push( geom::UV { u: st.st[0], v: 1.0-st.st[1] } ); // s = u, v = 1 - t
-                }
-            }
-
-        }else{
-            // Static mesh will be produced 
-            
-        }
-        return geom::GLReadyMesh::Corrupted(String::from("Cannot make GL ready mesh from MD3 model!"));
-    }
-}
 
