@@ -9,3 +9,4 @@ path = "src/test01/main.rs"
 
 [dependencies]
 byteorder = "*"
+itertools = "*"
