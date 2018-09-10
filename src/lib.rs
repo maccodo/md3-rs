@@ -91,6 +91,11 @@ macro_rules! implement_geometry_types {
                 }
             }
 
+            macro_rules! print_val {
+                ($val:expr) => {
+                    println!("{} = {}", stringify!($val), $val )
+                };
+            }
 
             impl CreateGLReadyMesh for md3_rs::md3::Md3Model
             {
@@ -105,19 +110,28 @@ macro_rules! implement_geometry_types {
                             let mut smesh = GLStaticMesh::empty();
 
                             // Collect vertices
-                            println!("NUM_OF_XYZ_NORMALS: {}", surf.data.xyz_normals.len());
+                            print_val!( surf.data.xyz_normals.len() );
+
+                            // smesh.vertices = surf.data.xyz_normals
+                            //     .iter().map(| xyzn | { 
+                            //         GLVertex{
+                            //             position: xyzn.decode_xyz(),
+                            //             normal:    xyzn.decode_normal(),
+                            //             uv:       [ 0f32, 0f32 ]
+                            //         }
+                            //     }).collect();
+
                             smesh.vertices = surf.data.xyz_normals.iter()
                                 .zip( surf.data.st_data.iter() )
                                 .map(|(xyzn, st)|{
-                                    println!("HERE_IS_VERTEX!");
                                     GLVertex{
-                                        position: xyzn.decode_xyz(),
+                                        position:  xyzn.decode_xyz(),
                                         normal:    xyzn.decode_normal(),
-                                        uv:       [ st.st[0], 1.0f32-st.st[1]]
+                                        uv:        [ st.st[0]  ,  1.0f32 - st.st[1] - st.st[1].floor()]
                                     }
                                 }).collect();
-                            println!("Collected {} vertices!", smesh.vertices.len() );
 
+                            print_val!( smesh.vertices.len() );
                             // Collect indices 
                             smesh.indices.reserve_exact( surf.data.triangles.len() * 3 );
                             for tri in surf.data.triangles.iter() {
@@ -130,9 +144,40 @@ macro_rules! implement_geometry_types {
                             amesh.frames.push( smesh);
                         }
                         return GLReadyMesh::VertexAnimated( amesh );
-                    }else{
+                    }else if self.header.frame_count == 1{
                         // Static mesh will be produced 
-                        
+
+                        let surf = &self.surfaces[0];
+
+                        let mut smesh = GLStaticMesh::empty();
+
+                        // Collect vertices
+                        print_val!( surf.data.xyz_normals.len() );
+                        print_val!( surf.data.st_data.len() );
+
+
+                        smesh.vertices = surf.data.xyz_normals.iter()
+                            .zip( surf.data.st_data.iter() )
+                            .map( |(xyzn, st)|{
+                                GLVertex{
+                                    position: xyzn.decode_xyz(),
+                                    normal:    xyzn.decode_normal(),
+                                    uv:        [ st.st[0]  ,  1.0f32 - st.st[1] - st.st[1].floor()]
+                                }
+                            }).collect();
+
+
+                        print_val!( smesh.vertices.len() );
+
+                        // Collect indices 
+                        smesh.indices.reserve_exact( surf.data.triangles.len() * 3 );
+                        for tri in surf.data.triangles.iter() {
+                            smesh.indices.push( tri.indices[0] as u16 );
+                            smesh.indices.push( tri.indices[1] as u16 );
+                            smesh.indices.push( tri.indices[2] as u16 );
+                        }
+
+                        return GLReadyMesh::Static( smesh );
                     }
                     return GLReadyMesh::Corrupted(String::from("Cannot make GL ready mesh from MD3 model!"));
                 }
@@ -267,6 +312,16 @@ pub mod md3 {
 
     // }
 
+
+    // Some macros
+
+    macro_rules! assign_fields {
+        ($val:expr, $struct:ident; $($field:ident)+) => {
+            $($struct.$field = $val;)+ 
+        }
+    }
+
+
     macro_rules! read_all_little_i32{
         ($i:ident;$($var_name:expr),+) => {
             $(($var_name = $i.read_i32::<LittleEndian>().expect(format!("FAILED LOADING FIELD OF {} STRUCURE", stringify!($s) ).as_str()));)+;
@@ -325,13 +380,6 @@ pub mod md3 {
             return hdr;
         }
     }
-
-    macro_rules! assign_fields {
-        ($val:expr, $struct:ident; $($field:ident)+) => {
-            $($struct.$field = $val;)+ 
-        }
-    }
-
     impl Vec3
     {
         fn read_from<RType: Read >( &mut self , inp : &mut RType )
@@ -346,10 +394,10 @@ pub mod md3 {
 
     impl Md3St
     {
-        fn read_from<RType: Read + Seek>( inp : &mut RType, start_offset : i32,
+        fn read_from<RType: Read + Seek>( inp : &mut RType, start_offset : u64,
                                           buff : &mut Vec<Md3St>, count : i32 )
         {
-            inp.seek( SeekFrom::Start( start_offset as u64 ) )
+            inp.seek( SeekFrom::Start( start_offset ) )
                 .expect("Error while seeking to ST position in MD3 file!");
             for _  in 0 ..  count {
                 let mut st : Md3St = unsafe { mem::zeroed() };
@@ -365,8 +413,11 @@ pub mod md3 {
 
     impl Md3Frame
     {
-        fn read_from<RType: Read + Seek>( inp: &mut RType, buff : &mut Vec<Md3Frame>, count: i32 ) 
+        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : u64, buff : &mut Vec<Md3Frame>, count: i32 ) 
         {
+            inp.seek( SeekFrom::Start( start_offset ) )
+                .expect("Failed to seek to position of MD3 frames within file!");
+
             for _ in 0 .. count  {
                 let mut frm : Md3Frame = unsafe { mem::zeroed() };
                 frm.bounds[0].read_from( inp );
@@ -382,7 +433,7 @@ pub mod md3 {
     impl Md3XyzNormal
     {
 
-        fn read_from<RType: Read + Seek>( inp : &mut RType, start_offset : i32, buff : &mut Vec<Md3XyzNormal>, count : i32 )
+        fn read_from<RType: Read + Seek>( inp : &mut RType, start_offset : u64, buff : &mut Vec<Md3XyzNormal>, count : i32 )
         {
             inp.seek( SeekFrom::Start( start_offset as u64 ) )
                 .expect("Error while seeking to XyzNormal position in MD3 file!");
@@ -421,10 +472,10 @@ pub mod md3 {
 
     impl Md3Surface
     {
-        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : i32 , buff : &mut Vec<Md3Surface>, count: i32 ) 
+        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : u64 , buff : &mut Vec<Md3Surface>, count: i32 ) 
         {
 
-            inp.seek( SeekFrom::Start( start_offset as u64) )
+            inp.seek( SeekFrom::Start( start_offset + 4 as u64) ) // + 4 because of IDENT 
                 .expect("Could not seek to surfaces offset!"); 
 
             println!("READING SURFACES; COUNT: {}", count);
@@ -444,12 +495,21 @@ pub mod md3 {
 
                 // FIXME: WE SHOULD LOAD Md3SurfaceData right now!
                 // FINISHME
-                Md3Triangle::read_from( inp, start_offset + surf_header.triangles_offset, &mut surf_data.triangles, surf_header.triangle_count );
+                Md3Triangle::read_from( inp, start_offset + (surf_header.triangles_offset as u64),
+                                        &mut surf_data.triangles, surf_header.triangle_count );
 
 
-                Md3XyzNormal::read_from( inp, start_offset+surf_header.xyz_normals_offset, &mut surf_data.xyz_normals,  surf_header.vertex_count );
+                Md3XyzNormal::read_from( inp, start_offset+surf_header.xyz_normals_offset as u64,
+                                         &mut surf_data.xyz_normals,
+                                         surf_header.vertex_count );
 
-                Md3Shader::read_from( inp, start_offset+surf_header.shaders_offset,  &mut surf_data.shaders, surf_header.shader_count );
+                Md3Shader::read_from( inp, start_offset+surf_header.shaders_offset as u64,
+                                      &mut surf_data.shaders, surf_header.shader_count );
+
+                Md3St::read_from( inp, start_offset+surf_header.st_offset as u64,
+                                  &mut surf_data.st_data, surf_header.triangle_count );
+
+                println!("LOADED {} OF XYZ_NORMALS", surf_data.xyz_normals.len());
 
                 buff.push( Md3Surface{ header: surf_header, data: surf_data } );
             }
@@ -458,7 +518,7 @@ pub mod md3 {
 
     impl Md3Shader
     {
-        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : i32, buff : &mut Vec<Md3Shader>, count: i32 ) 
+        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : u64, buff : &mut Vec<Md3Shader>, count: i32 ) 
         {
             inp.seek( SeekFrom::Start( start_offset as u64 ) )
                 .expect("Error while seeking to Shader position in MD3 file");
@@ -490,7 +550,7 @@ pub mod md3 {
 
     impl Md3Triangle
     {
-        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : i32, buff : &mut Vec<Md3Triangle>, count: i32 ) 
+        fn read_from<RType: Read + Seek>( inp: &mut RType, start_offset : u64, buff : &mut Vec<Md3Triangle>, count: i32 ) 
         {
             inp.seek( SeekFrom::Start( start_offset as u64 ) ).
                 expect("Could not seek into file(Triangles)!");
@@ -517,7 +577,11 @@ pub mod md3 {
 
         pub fn load( fname : String ) -> Option<Md3Model>
         {
-            let mut fin = File::open(fname).expect("Could not open MD3 model file!");
+            use std::io::BufReader;
+
+            let _fh = File::open(fname).expect("Could not open MD3 model file!");
+            let mut fin = BufReader::new( _fh );
+
             // Find IDP3 in file and read the following header
             let ident_val = [ 73 as u8, 68, 80, 51 ];
             let mut ident_idx : usize = 0;
@@ -537,6 +601,7 @@ pub mod md3 {
             }
 
             fin.seek( SeekFrom::Start( tmp_offset ) ).ok().unwrap();
+
             println!("MD3 IDENT OFFSET: {}", tmp_offset);
             let mut m = Md3Model {
                 header: Md3Header::read_from( &mut fin ),
@@ -547,17 +612,17 @@ pub mod md3 {
                 shaders:     vec![]
             };
 
-            fin.seek( SeekFrom::Start( m.header.frames_offset as u64) )
-                .expect("Could not seek to frames offset!"); 
+            // fin.seek( SeekFrom::Start( m.header.frames_offset as u64) )
+            //     .expect("Could not seek to frames offset!"); 
 
-            Md3Frame::read_from(
-                &mut fin, &mut m.frames,
-                m.header.frame_count
+            Md3Frame::read_from (
+                &mut fin, m.header.frames_offset as u64,
+                &mut m.frames, m.header.frame_count
             );
 
-            Md3Surface::read_from(
-                &mut fin, m.header.surfaces_offset, &mut m.surfaces,
-                m.header.surface_count
+            Md3Surface::read_from (
+                &mut fin, m.header.surfaces_offset as u64, 
+                &mut m.surfaces, m.header.surface_count
             );
 
             return Some(m);
